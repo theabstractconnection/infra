@@ -1,0 +1,70 @@
+image: starefossen/ruby-node:latest
+
+definitions:
+  caches:
+    bundler: ./vendor
+    yarn: ./node_modules
+  services:
+    postgres:
+      image: postgres
+      environment:
+        POSTGRES_DB: ci_test
+        POSTGRES_USER: ci_test_user
+        POSTGRES_PASSWORD: ci_test_user_password
+  step: &BuildAndTest
+    name: Build & Test
+    caches:
+      - bundler
+      - yarn
+    script:
+      - yarn install
+      - yarn test:js
+      - export DATABASE_URL=postgresql://ci_test_user:ci_test_user_password@localhost/ci_test
+      - cp config/database.ci.yml config/database.yml
+      - bundle install --path vendor
+      - RAILS_ENV=development bundle exec rake db:setup
+      - RAILS_ENV=test bundle exec rake db:test:prepare
+      - bundle exec rake test
+    services:
+      - postgres
+
+pipelines:
+  default:
+    - step: *BuildAndTest
+    - step:
+        name: Create artifact
+          script:
+            - tar czfv application.tgz pom.xml dist/
+          artifacts:
+            - application.tgz
+    - step:
+        name: Deploy to staging Heroku pipeline from Artifacts
+        deployment: staging
+        script:
+        - pipe: atlassian/heroku-deploy:1.1.2
+          variables:
+            HEROKU_API_KEY: $HEROKU_API_KEY
+            HEROKU_APP_NAME: $HEROKU_APP_NAME
+            ZIP_FILE: "application.tgz"
+  branches:
+    master:
+      - step:
+          name: "Deploy to Production"
+          script:
+            - git push https://heroku:$HEROKU_API_KEY@git.heroku.com/$PRODUCTION_HEROKU_APP_NAME.git HEAD:master
+    develop:
+      - step:
+          name: "Deploy to Staging"
+          script:
+            - git push https://heroku:$HEROKU_API_KEY@git.heroku.com/$STAGING_HEROKU_APP_NAME.git HEAD:master
+      - step:
+          name: "Trigger Deploy to Production"
+          trigger: manual
+          script:
+            - git checkout master
+            - git merge develop
+            - git push origin master
+  pull-requests:
+    feature/*:
+      - step: *BuildAndTest
+
